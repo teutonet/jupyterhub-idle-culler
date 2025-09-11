@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import ssl
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from textwrap import dedent
 from urllib.parse import quote
@@ -19,6 +19,8 @@ from tornado.httputil import url_concat
 from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.log import app_log
 from tornado.options import define, options, parse_command_line
+
+from teuto_cron_util import is_job_due
 
 __version__ = "1.4.0"
 
@@ -79,6 +81,7 @@ async def cull_idle(
     url,
     api_token,
     inactive_limit,
+    pre_start,
     cull_users=False,
     remove_named_servers=False,
     max_age=0,
@@ -172,7 +175,7 @@ async def cull_idle(
 
     resp_model = json.loads(resp.body.decode("utf8", "replace"))
     state_filter = V(resp_model["version"]) >= STATE_FILTER_MIN_VERSION
-
+    pre_start_td = timedelta(seconds=pre_start)
     now = utcnow()
 
     async def handle_server(user, server_name, server, max_age, inactive_limit):
@@ -235,6 +238,15 @@ async def cull_idle(
         # if server['state']['profile_name'] == 'unlimited'
         #     return False
         # inactive_limit = server['state']['culltime']
+        if server.get("scheduler_options"):
+            scheduler_options = server.get("scheduler_options")
+
+            is_due = is_job_due(scheduler_options, pre_start_offset_seconds=pre_start)
+            if is_due:
+                app_log.info(
+                    f"Server {log_name} has due job(s) in the next {format_td(pre_start_td)} and will not be culled!"
+                )
+                return False
 
         is_default_server = server_name == ""
         is_named_server = server_name != ""
@@ -378,7 +390,10 @@ async def cull_idle(
         ) and (cull_admin_users or not user_is_admin)
 
         if should_cull:
-            app_log.info(f"Culling user {user['name']} " f"(inactive for {inactive})")
+            app_log.info(
+                f"Culling user {user['name']} "
+                f"(inactive for {inactive})"
+            )
 
         if max_age and not should_cull:
             # only check created if max_age is specified
@@ -459,6 +474,16 @@ def main():
         help=dedent(
             """
             The JupyterHub API URL.
+            """
+        ).strip(),
+    )
+    define(
+        "pre_start",
+        type=int,
+        default=120,
+        help=dedent(
+            """
+            The time the server should be started ahead of the scheduled job time (in seconds).
             """
         ).strip(),
     )
@@ -621,6 +646,7 @@ def main():
         api_page_size=options.api_page_size,
         cull_default_servers=options.cull_default_servers,
         cull_named_servers=options.cull_named_servers,
+        pre_start=options.pre_start,
     )
     # schedule first cull immediately
     # because PeriodicCallback doesn't start until the end of the first interval
