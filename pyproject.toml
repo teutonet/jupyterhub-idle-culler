@@ -28,6 +28,7 @@ dependencies = [
     "tornado",
     "packaging",
     "python-dateutil",
+    "teuto-cron-util"
 ]
 dynamic = ["version"]
 
